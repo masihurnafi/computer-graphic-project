@@ -1,0 +1,67 @@
+nano bezier_visualizer.pynano bezier_visualizer.py# Bezier Curve Evaluation Algorithm Comparison Visualiser
+
+An interactive OpenGL tool for comparing three mathematically equivalent
+algorithms for evaluating cubic Bézier curves — the same computation that
+powers font rasterisers (FreeType, DirectWrite), SVG renderers, PDF
+viewers, and CAD curve editors.
+
+## The Real-World Problem
+
+Every time you read text on screen, the operating system evaluates Bézier
+curves (stored in the font file) into pixel coordinates. Three common
+algorithms exist:
+
+| Algorithm           | Speed    | Accuracy              |
+|---------------------|----------|-----------------------|
+| de Casteljau        | Slower   | Exact, very stable    |
+| Bernstein polynomial| Medium   | Exact                 |
+| Forward Differencing| Fastest  | Drifts (floating pt.) |
+
+The differences only become visible when the result is rendered to a
+pixel grid. This tool makes that comparison visible in real time.
+
+## Computer Graphics Techniques Demonstrated
+
+- **Bézier Curves** — three evaluation algorithms
+- **Line & Shape Drawing** — GL_LINE_STRIP, GL_LINES, GL_LINE_LOOP
+- **Color Fill** — GL_TRIANGLE_FAN glyph fill (rasterisation sim.)
+- **2D Transformations** — pan / zoom / rotate camera matrix
+- **Line Clipping** — Cohen-Sutherland, 4-bit region codes
+
+## Requirements
+
+- Python 3.8+
+- PyOpenGL, PyOpenGL_accelerate
+- (Linux only) freeglut3-dev
+
+## Install
+
+    pip install -r requirements.txt
+
+## Run
+
+    python bezier_visualizer.py
+
+## Controls
+
+| Input         | Action                                 |
+|---------------|----------------------------------------|
+| Mouse drag    | Move nearest control point             |
+| W A S D       | Pan the canvas                         |
+| + / -         | Zoom in / out                          |
+| Q / E         | Rotate canvas                          |
+| 0             | Reset camera                           |
+| F             | Toggle glyph fill                      |
+| C             | Toggle line clipping (demo)            |
+| R             | Randomise control points               |
+| [ / ]         | Halve / double curve segments          |
+| ESC           | Quit                                   |
+
+## What to Observe in the Demo
+
+1. Push segments to 512 (`]` key repeatedly) — the Forward Differencing
+   panel drifts visibly from the other two. That is floating-point error.
+2. Watch the HUD timings — Forward Differencing is often 2–3× faster
+   per frame than de Casteljau.
+3. Turn off clipping (`C`) and zoom in — the curve bleeds into the
+   adjacent panel. Turn it back on to see Cohen-Sutherland at work.
