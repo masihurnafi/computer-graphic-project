@@ -1,55 +1,91 @@
+#!/opt/homebrew/bin/python3.13
+# =====================================================================
+#  BEZIER CURVE EVALUATION ALGORITHM COMPARISON VISUALIZER
+#  Track B: Algorithm Comparison Tool / Research Visualiser
+#
+#  Compares three mathematically equivalent algorithms for evaluating
+#  cubic Bezier curves:
+#     1. de Casteljau   (numerically stable, slower)
+#     2. Bernstein      (direct polynomial evaluation)
+#     3. Forward Diff.  (fastest, accumulates floating-point error)
+#
+#  Real-world use case: font rasterizers (FreeType, DirectWrite),
+#  CAD/CAM curve design, SVG / PDF vector rendering.
+#
+#  CG Techniques demonstrated (from course required list):
+#     [x] Bezier Curves     -- core of the project
+#     [x] Line & Shape      -- GL_LINE_STRIP, GL_LINES, GL_LINE_LOOP
+#     [x] Color Fill        -- GL_TRIANGLE_FAN glyph fill + HUD bars
+#     [x] 2D Transformations-- pan / zoom / rotate camera matrix
+#     [x] Line Clipping     -- Cohen-Sutherland, 4-bit region codes
+#
+#  Windowing: GLFW (stable on macOS Apple Silicon)
+#  Rendering: PyOpenGL (raw OpenGL 2.1 fixed-function pipeline)
+#
+#  Controls:
+#     Left-drag     : move nearest control point
+#     W A S D       : pan the canvas
+#     + / -         : zoom in / out
+#     Q / E         : rotate canvas
+#     0             : reset camera
+#     F             : toggle fill mode
+#     C             : toggle clipping on/off
+#     R             : randomize control points
+#     [ / ]         : halve / double segments
+#     ESC           : quit
+# =====================================================================
+
+import glfw
+import OpenGL
+OpenGL.ERROR_CHECKING = False
+OpenGL.ERROR_LOGGING = False
+
 from OpenGL.GL import *
-from OpenGL.GLUT import *
 from OpenGL.GLU import *
+
 import math
-import sys
 import time
 import random
+import sys
 
 # ---------------------------------------------------------------------
 # Window & layout
 # ---------------------------------------------------------------------
-WIN_W, WIN_H = 1200, 640          # total window size
-PANEL_W = WIN_W // 3              # each of 3 comparison panels
-HUD_H   = 60                      # top strip for stats
+WIN_W, WIN_H = 1200, 640
+PANEL_W = WIN_W // 3
+HUD_H   = 60
 
 # ---------------------------------------------------------------------
-# Canvas camera (2D TRANSFORMATIONS): pan, zoom, rotation
+# Camera (2D TRANSFORMATIONS)
 # ---------------------------------------------------------------------
-cam_pan_x   = 0.0
-cam_pan_y   = 0.0
-cam_zoom    = 1.0
-cam_angle   = 0.0                 # in degrees, around canvas centre
+cam_pan_x = 0.0
+cam_pan_y = 0.0
+cam_zoom  = 1.0
+cam_angle = 0.0
 
 # ---------------------------------------------------------------------
-# Control points of the cubic Bezier curve, in world coordinates
-# (canvas-local coordinates; origin at canvas centre)
+# Control points of the cubic Bezier curve (canvas-local coords)
 # ---------------------------------------------------------------------
 ctrl = [
-    [-300.0, -150.0],   # P0  (start point)
-    [-100.0,  220.0],   # P1  (control handle 1)
-    [ 100.0, -220.0],   # P2  (control handle 2)
-    [ 300.0,  150.0],   # P3  (end point)
+    [-300.0, -150.0],
+    [-100.0,  220.0],
+    [ 100.0, -220.0],
+    [ 300.0,  150.0],
 ]
-selected_pt = 0                     # which control point arrow keys nudge
+selected_pt = 0
 dragging    = False
 
 # ---------------------------------------------------------------------
 # Rendering options
 # ---------------------------------------------------------------------
-SEGMENTS       = 64                 # number of line segments per curve
-fill_mode      = True               # draw GL_TRIANGLE_FAN glyph fill
-clipping_on    = True               # demo toggle for clipping
+SEGMENTS    = 64
+fill_mode   = True
+clipping_on = True
 
 # ---------------------------------------------------------------------
-# Metrics: per-algorithm last-frame time in microseconds
+# Metrics
 # ---------------------------------------------------------------------
-metrics = {
-    "decasteljau": {"time_us": 0.0, "points": 0},
-    "bernstein":   {"time_us": 0.0, "points": 0},
-    "forward":     {"time_us": 0.0, "points": 0},
-}
-metrics_smooth = {k: 0.0 for k in metrics}   # smoothed display values
+metrics_smooth = {"decasteljau": 0.0, "bernstein": 0.0, "forward": 0.0}
 
 
 # =====================================================================
@@ -57,66 +93,50 @@ metrics_smooth = {k: 0.0 for k in metrics}   # smoothed display values
 # =====================================================================
 
 def bezier_decasteljau(p0, p1, p2, p3, n):
-    """de Casteljau: recursive linear interpolation -- the textbook stable way."""
+    """de Casteljau: recursive linear interpolation (numerically stable)."""
     pts = []
     for i in range(n + 1):
         t = i / n
-        # First-level lerps
-        a = (p0[0] + (p1[0] - p0[0]) * t, p0[1] + (p1[1] - p0[1]) * t)
-        b = (p1[0] + (p2[0] - p1[0]) * t, p1[1] + (p2[1] - p1[1]) * t)
-        c = (p2[0] + (p3[0] - p2[0]) * t, p2[1] + (p3[1] - p2[1]) * t)
-        # Second-level lerps
-        d = (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
-        e = (b[0] + (c[0] - b[0]) * t, b[1] + (c[1] - b[1]) * t)
-        # Third-level lerp = final point
-        f = (d[0] + (e[0] - d[0]) * t, d[1] + (e[1] - d[1]) * t)
+        a = (p0[0] + (p1[0]-p0[0])*t, p0[1] + (p1[1]-p0[1])*t)
+        b = (p1[0] + (p2[0]-p1[0])*t, p1[1] + (p2[1]-p1[1])*t)
+        c = (p2[0] + (p3[0]-p2[0])*t, p2[1] + (p3[1]-p2[1])*t)
+        d = (a[0] + (b[0]-a[0])*t, a[1] + (b[1]-a[1])*t)
+        e = (b[0] + (c[0]-b[0])*t, b[1] + (c[1]-b[1])*t)
+        f = (d[0] + (e[0]-d[0])*t, d[1] + (e[1]-d[1])*t)
         pts.append(f)
     return pts
 
 
 def bezier_bernstein(p0, p1, p2, p3, n):
-    """Bernstein polynomial form: direct evaluation B(t) = sum(Bi * Pi)."""
+    """Bernstein polynomial: direct B(t) = sum(Bi * Pi)."""
     pts = []
     for i in range(n + 1):
         t = i / n
         u = 1.0 - t
-        b0 = u * u * u
-        b1 = 3.0 * u * u * t
-        b2 = 3.0 * u * t * t
-        b3 = t * t * t
-        x = b0 * p0[0] + b1 * p1[0] + b2 * p2[0] + b3 * p3[0]
-        y = b0 * p0[1] + b1 * p1[1] + b2 * p2[1] + b3 * p3[1]
+        b0 = u*u*u
+        b1 = 3.0*u*u*t
+        b2 = 3.0*u*t*t
+        b3 = t*t*t
+        x = b0*p0[0] + b1*p1[0] + b2*p2[0] + b3*p3[0]
+        y = b0*p0[1] + b1*p1[1] + b2*p2[1] + b3*p3[1]
         pts.append((x, y))
     return pts
 
 
 def bezier_forward_diff(p0, p1, p2, p3, n):
-    """
-    Forward Differencing: incremental update using finite differences.
-    Fastest, but accumulates floating-point drift. We re-seed every 16 steps
-    from de Casteljau to keep the endpoint anchored (production trick).
-    """
-    # Compute the four finite-difference deltas
-    d0 = p0
-    d1 = (3 * (p1[0] - p0[0]), 3 * (p1[1] - p0[1]))
-    d2 = (3 * (p0[0] - 2 * p1[0] + p2[0]),
-          3 * (p0[1] - 2 * p1[1] + p2[1]))
-    d3 = (p3[0] - 3 * p2[0] + 3 * p1[0] - p0[0],
-          p3[1] - 3 * p2[1] + 3 * p1[1] - p0[1])
-
+    """Forward Differencing: incremental update, re-seeded every 16 steps."""
+    d1 = (3*(p1[0]-p0[0]), 3*(p1[1]-p0[1]))
+    d2 = (3*(p0[0]-2*p1[0]+p2[0]), 3*(p0[1]-2*p1[1]+p2[1]))
+    d3 = (p3[0]-3*p2[0]+3*p1[0]-p0[0], p3[1]-3*p2[1]+3*p1[1]-p0[1])
     dt = 1.0 / n
-    # Step increments (order-3 forward difference for a cubic)
-    s1 = (d1[0] * dt + d2[0] * dt * dt + d3[0] * dt * dt * dt,
-          d1[1] * dt + d2[1] * dt * dt + d3[1] * dt * dt * dt)
-    s2 = (2 * d2[0] * dt * dt + 6 * d3[0] * dt * dt * dt,
-          2 * d2[1] * dt * dt + 6 * d3[1] * dt * dt * dt)
-    s3 = (6 * d3[0] * dt * dt * dt,
-          6 * d3[1] * dt * dt * dt)
-
-    x, y = d0
+    s1 = (d1[0]*dt + d2[0]*dt*dt + d3[0]*dt*dt*dt,
+          d1[1]*dt + d2[1]*dt*dt + d3[1]*dt*dt*dt)
+    s2 = (2*d2[0]*dt*dt + 6*d3[0]*dt*dt*dt,
+          2*d2[1]*dt*dt + 6*d3[1]*dt*dt*dt)
+    s3 = (6*d3[0]*dt*dt*dt, 6*d3[1]*dt*dt*dt)
+    x, y = p0
     pts = [(x, y)]
     for i in range(1, n + 1):
-        # Re-seed exactly every 16 steps to kill drift
         if i % 16 == 0:
             t = i / n
             u = 1 - t
@@ -124,87 +144,75 @@ def bezier_forward_diff(p0, p1, p2, p3, n):
             y = (u*u*u*p0[1] + 3*u*u*t*p1[1] + 3*u*t*t*p2[1] + t*t*t*p3[1])
         else:
             x += s1[0]; y += s1[1]
-            s1 = (s1[0] + s2[0], s1[1] + s2[1])
-            s2 = (s2[0] + s3[0], s2[1] + s3[1])
+            s1 = (s1[0]+s2[0], s1[1]+s2[1])
+            s2 = (s2[0]+s3[0], s2[1]+s3[1])
         pts.append((x, y))
     return pts
 
 
 # =====================================================================
-#  2D TRANSFORMATIONS: world -> panel-local screen pixel
+#  2D TRANSFORMATIONS: world -> screen
 # =====================================================================
 
 def apply_camera(px, py, canvas_cx, canvas_cy):
-    """
-    Compose: translate -> rotate -> scale -> translate-to-canvas-centre.
-    This is the standard 2D affine chain (a 3x3 matrix applied manually).
-    """
-    # 1) user pan offset
     x = px + cam_pan_x
     y = py + cam_pan_y
-    # 2) rotation around origin
     rad = math.radians(cam_angle)
     cs, sn = math.cos(rad), math.sin(rad)
-    xr = x * cs - y * sn
-    yr = x * sn + y * cs
-    # 3) zoom
-    xz = xr * cam_zoom
-    yz = yr * cam_zoom
-    # 4) final canvas position
-    return (canvas_cx + xz, canvas_cy + yz)
+    xr = x*cs - y*sn
+    yr = x*sn + y*cs
+    return (canvas_cx + xr*cam_zoom, canvas_cy + yr*cam_zoom)
 
 
 # =====================================================================
-#  LINE CLIPPING: Cohen-Sutherland with 4-bit region codes
+#  LINE CLIPPING (Cohen-Sutherland)
 # =====================================================================
 INSIDE, LEFT, RIGHT, BOTTOM, TOP = 0, 1, 2, 4, 8
 
-def _region_code(x, y, xmin, ymin, xmax, ymax):
-    code = INSIDE
-    if x < xmin:   code |= LEFT
-    elif x > xmax: code |= RIGHT
-    if y < ymin:   code |= BOTTOM
-    elif y > ymax: code |= TOP
-    return code
+def _rc(x, y, xmin, ymin, xmax, ymax):
+    c = INSIDE
+    if x < xmin:   c |= LEFT
+    elif x > xmax: c |= RIGHT
+    if y < ymin:   c |= BOTTOM
+    elif y > ymax: c |= TOP
+    return c
 
 def clip_line(x0, y0, x1, y1, xmin, ymin, xmax, ymax):
-    """Return clipped segment (x0,y0,x1,y1) or None if fully outside."""
-    c0 = _region_code(x0, y0, xmin, ymin, xmax, ymax)
-    c1 = _region_code(x1, y1, xmin, ymin, xmax, ymax)
+    c0 = _rc(x0, y0, xmin, ymin, xmax, ymax)
+    c1 = _rc(x1, y1, xmin, ymin, xmax, ymax)
     while True:
-        if not (c0 | c1):                     # both inside
+        if not (c0 | c1):
             return x0, y0, x1, y1
-        if c0 & c1:                           # both share outside region
+        if c0 & c1:
             return None
         out = c0 or c1
         if out & TOP:
-            x = x0 + (x1 - x0) * (ymax - y0) / (y1 - y0); y = ymax
+            x = x0 + (x1-x0)*(ymax-y0)/(y1-y0); y = ymax
         elif out & BOTTOM:
-            x = x0 + (x1 - x0) * (ymin - y0) / (y1 - y0); y = ymin
+            x = x0 + (x1-x0)*(ymin-y0)/(y1-y0); y = ymin
         elif out & RIGHT:
-            y = y0 + (y1 - y0) * (xmax - x0) / (x1 - x0); x = xmax
-        else:  # LEFT
-            y = y0 + (y1 - y0) * (xmin - x0) / (x1 - x0); x = xmin
+            y = y0 + (y1-y0)*(xmax-x0)/(x1-x0); x = xmax
+        else:
+            y = y0 + (y1-y0)*(xmin-x0)/(x1-x0); x = xmin
         if out == c0:
             x0, y0 = x, y
-            c0 = _region_code(x0, y0, xmin, ymin, xmax, ymax)
+            c0 = _rc(x0, y0, xmin, ymin, xmax, ymax)
         else:
             x1, y1 = x, y
-            c1 = _region_code(x1, y1, xmin, ymin, xmax, ymax)
+            c1 = _rc(x1, y1, xmin, ymin, xmax, ymax)
 
 
 # =====================================================================
-#  DRAWING HELPERS
+#  DRAW HELPERS
 # =====================================================================
 
 def draw_clipped_line(p, q, color, lw=1.0, clip_box=None):
-    """Draw line p->q; clip to clip_box=(xmin,ymin,xmax,ymax) if clipping_on."""
     x0, y0 = p; x1, y1 = q
     if clipping_on and clip_box is not None:
-        result = clip_line(x0, y0, x1, y1, *clip_box)
-        if result is None:
+        r = clip_line(x0, y0, x1, y1, *clip_box)
+        if r is None:
             return
-        x0, y0, x1, y1 = result
+        x0, y0, x1, y1 = r
     glColor3f(*color)
     glLineWidth(lw)
     glBegin(GL_LINES)
@@ -214,19 +222,18 @@ def draw_clipped_line(p, q, color, lw=1.0, clip_box=None):
 
 
 def draw_polyline(pts, color, lw=2.0, clip_box=None):
-    """Draw a connected polyline, optionally clipped segment by segment."""
     if not pts:
         return
     glColor3f(*color)
     glLineWidth(lw)
     if clipping_on and clip_box is not None:
         glBegin(GL_LINES)
-        for i in range(len(pts) - 1):
-            result = clip_line(pts[i][0], pts[i][1],
-                               pts[i+1][0], pts[i+1][1], *clip_box)
-            if result is not None:
-                glVertex2f(result[0], result[1])
-                glVertex2f(result[2], result[3])
+        for i in range(len(pts)-1):
+            r = clip_line(pts[i][0], pts[i][1],
+                          pts[i+1][0], pts[i+1][1], *clip_box)
+            if r is not None:
+                glVertex2f(r[0], r[1])
+                glVertex2f(r[2], r[3])
         glEnd()
     else:
         glBegin(GL_LINE_STRIP)
@@ -236,10 +243,6 @@ def draw_polyline(pts, color, lw=2.0, clip_box=None):
 
 
 def draw_filled_region(pts, color, clip_box=None):
-    """
-    Glyph fill: triangulate the region between the curve and its chord.
-    Uses GL_TRIANGLE_FAN -- matches how TrueType outlines become solid.
-    """
     if len(pts) < 3:
         return
     glColor3f(*color)
@@ -247,8 +250,6 @@ def draw_filled_region(pts, color, clip_box=None):
     for p in pts:
         x, y = p
         if clipping_on and clip_box is not None:
-            # Simple point clamp to viewport; interior triangles that
-            # fully fall outside are silently dropped by the GPU.
             x = max(clip_box[0], min(clip_box[2], x))
             y = max(clip_box[1], min(clip_box[3], y))
         glVertex2f(x, y)
@@ -265,292 +266,258 @@ def draw_rect(x, y, w, h, color):
     glEnd()
 
 
-def draw_text(x, y, text, color, font=GLUT_BITMAP_HELVETICA_12):
-    glColor3f(*color)
-    glRasterPos2f(x, y)
-    for ch in text:
-        glutBitmapCharacter(font, ord(ch))
-
-
 def draw_circle(cx, cy, r, color, segments=16):
     glColor3f(*color)
     glBegin(GL_TRIANGLE_FAN)
     glVertex2f(cx, cy)
     for i in range(segments + 1):
-        a = 2 * math.pi * i / segments
-        glVertex2f(cx + r * math.cos(a), cy + r * math.sin(a))
+        a = 2*math.pi*i/segments
+        glVertex2f(cx + r*math.cos(a), cy + r*math.sin(a))
     glEnd()
 
 
 # =====================================================================
-#  PER-PANEL RENDERER
+#  PANEL RENDERER
 # =====================================================================
 
-def draw_panel(panel_index, title, algorithm_name, algorithm_fn, curve_color):
-    """
-    Draw one of the three comparison panels:
-      * background, border, title
-      * control polygon (dashed)
-      * evaluated Bezier curve
-      * optional glyph fill
-      * control point handles
-    Also measures evaluation time and stores it in metrics.
-    """
-    # Panel bounds in pixels
-    panel_x0 = panel_index * PANEL_W
-    panel_x1 = panel_x0 + PANEL_W
-    panel_y0 = 0
-    panel_y1 = WIN_H - HUD_H
+def draw_panel(panel_index, algo_name, algo_fn, curve_color):
+    px0 = panel_index * PANEL_W
+    px1 = px0 + PANEL_W
+    py0 = 0
+    py1 = WIN_H - HUD_H
 
-    # Panels are separated by a thin strip; the clip box is slightly inside
     pad = 6
-    clip_box = (panel_x0 + pad, panel_y0 + pad,
-                panel_x1 - pad, panel_y1 - pad)
+    clip_box = (px0 + pad, py0 + pad, px1 - pad, py1 - pad)
 
-    # --- background ---
-    draw_rect(panel_x0, panel_y0, PANEL_W, panel_y1, (0.10, 0.11, 0.14))
-    # --- border ---
+    # Panel background
+    draw_rect(px0, py0, PANEL_W, py1, (0.10, 0.11, 0.14))
+
+    # Panel border
     glColor3f(0.30, 0.32, 0.38)
     glLineWidth(2.0)
     glBegin(GL_LINE_LOOP)
-    glVertex2f(panel_x0 + 1, panel_y0 + 1)
-    glVertex2f(panel_x1 - 1, panel_y0 + 1)
-    glVertex2f(panel_x1 - 1, panel_y1 - 1)
-    glVertex2f(panel_x0 + 1, panel_y1 - 1)
+    glVertex2f(px0 + 1, py0 + 1)
+    glVertex2f(px1 - 1, py0 + 1)
+    glVertex2f(px1 - 1, py1 - 1)
+    glVertex2f(px0 + 1, py1 - 1)
     glEnd()
 
-    # --- canvas centre for this panel ---
-    canvas_cx = (panel_x0 + panel_x1) / 2.0
-    canvas_cy = panel_y0 + (panel_y1 - panel_y0) * 0.55
+    ccx = (px0 + px1) / 2.0
+    ccy = py0 + (py1 - py0) * 0.55
 
-    # --- transform control points to screen ---
-    screen_ctrl = [apply_camera(p[0], p[1], canvas_cx, canvas_cy) for p in ctrl]
+    screen_ctrl = [apply_camera(p[0], p[1], ccx, ccy) for p in ctrl]
 
-    # --- evaluate the Bezier curve with the assigned algorithm ---
     p0, p1, p2, p3 = ctrl
     t0 = time.perf_counter()
-    curve_pts = algorithm_fn(p0, p1, p2, p3, SEGMENTS)
+    curve_pts = algo_fn(p0, p1, p2, p3, SEGMENTS)
     t1 = time.perf_counter()
     dt_us = (t1 - t0) * 1e6
 
-    # update metrics with exponential smoothing so HUD is readable
-    metrics[algorithm_name]["time_us"] = dt_us
-    metrics[algorithm_name]["points"] = len(curve_pts)
-    metrics_smooth[algorithm_name] = (0.9 * metrics_smooth[algorithm_name]
-                                      + 0.1 * dt_us)
+    metrics_smooth[algo_name] = 0.9*metrics_smooth[algo_name] + 0.1*dt_us
 
-    # --- transform curve points to screen ---
-    screen_curve = [apply_camera(x, y, canvas_cx, canvas_cy) for (x, y) in curve_pts]
+    screen_curve = [apply_camera(x, y, ccx, ccy) for (x, y) in curve_pts]
 
-    # --- glyph fill (drawn FIRST, under the outline) ---
+    # Glyph fill (Color Fill technique)
     if fill_mode and len(screen_curve) >= 2:
-        # close the contour along the chord between endpoint and start point
         contour = screen_curve + [screen_ctrl[0]]
-        draw_filled_region(contour, (curve_color[0]*0.45,
-                                     curve_color[1]*0.45,
-                                     curve_color[2]*0.45),
+        draw_filled_region(contour,
+                           (curve_color[0]*0.45,
+                            curve_color[1]*0.45,
+                            curve_color[2]*0.45),
                            clip_box)
 
-    # --- control polygon (dashed look via segments) ---
+    # Control polygon
     for i in range(3):
         draw_clipped_line(screen_ctrl[i], screen_ctrl[i+1],
                           (0.45, 0.45, 0.50), 1.0, clip_box)
 
-    # --- the curve itself ---
+    # The curve itself
     draw_polyline(screen_curve, curve_color, 3.0, clip_box)
 
-    # --- control point handles ---
+    # Control point handles
     for i, p in enumerate(screen_ctrl):
-        inside = (clip_box[0] <= p[0] <= clip_box[2]
-                  and clip_box[1] <= p[1] <= clip_box[3])
-        if not inside:
+        if not (clip_box[0] <= p[0] <= clip_box[2]
+                and clip_box[1] <= p[1] <= clip_box[3]):
             continue
         color = (1.0, 0.85, 0.2) if i == selected_pt else (0.85, 0.85, 0.9)
         draw_circle(p[0], p[1], 6, color)
         draw_circle(p[0], p[1], 3, (0.15, 0.15, 0.18))
 
-    # --- panel title ---
-    draw_text(panel_x0 + 12, panel_y1 - 22, title, (0.95, 0.95, 0.95),
-              GLUT_BITMAP_HELVETICA_18)
-    draw_text(panel_x0 + 12, panel_y1 - 42,
-              f"algorithm: {algorithm_name}", (0.7, 0.75, 0.85))
-
 
 # =====================================================================
-#  MAIN DISPLAY
+#  SCREEN-TO-WORLD (inverse camera transform, for mouse picking)
 # =====================================================================
 
-def display():
-    glClearColor(0.05, 0.05, 0.07, 1.0)
-    glClear(GL_COLOR_BUFFER_BIT)
-
-    # Panel 1: de Casteljau
-    draw_panel(0, "de Casteljau", "decasteljau",
-               bezier_decasteljau, (0.35, 0.75, 1.0))
-
-    # Panel 2: Bernstein
-    draw_panel(1, "Bernstein Polynomial", "bernstein",
-               bezier_bernstein, (0.55, 0.95, 0.45))
-
-    # Panel 3: Forward Differencing
-    draw_panel(2, "Forward Differencing", "forward",
-               bezier_forward_diff, (1.0, 0.65, 0.35))
-
-    # ---------- HUD across the top ----------
-    draw_rect(0, WIN_H - HUD_H, WIN_W, HUD_H, (0.08, 0.09, 0.11))
-
-    # Left: title
-    draw_text(12, WIN_H - 22,
-              "Bezier Evaluation Algorithm Comparison  |  "
-              "font rasterisation / CAD curve design",
-              (0.85, 0.88, 0.95), GLUT_BITMAP_HELVETICA_12)
-
-    # Right: per-algorithm timings
-    txt = (f"deCasteljau {metrics_smooth['decasteljau']:7.1f} us   |   "
-           f"Bernstein {metrics_smooth['bernstein']:7.1f} us   |   "
-           f"FwdDiff {metrics_smooth['forward']:7.1f} us   |   "
-           f"segments={SEGMENTS}   "
-           f"fill={'ON' if fill_mode else 'OFF'}   "
-           f"clip={'ON' if clipping_on else 'OFF'}   "
-           f"zoom={cam_zoom:.2f}x   rot={cam_angle:.0f}deg")
-    draw_text(12, WIN_H - 44, txt, (0.75, 0.80, 0.90))
-
-    # Bottom-left helper line
-    draw_text(12, 10,
-              "drag mouse to move nearest point  |  "
-              "WASD pan  |  +/- zoom  |  Q/E rotate  |  "
-              "0 reset  |  F fill  |  C clip  |  R random  |  ESC quit",
-              (0.55, 0.60, 0.70))
-
-    glutSwapBuffers()
-
-
-# =====================================================================
-#  INPUT HANDLERS
-# =====================================================================
-
-def reshape(w, h):
-    glViewport(0, 0, w, h)
-    glMatrixMode(GL_PROJECTION)
-    glLoadIdentity()
-    gluOrtho2D(0, WIN_W, 0, WIN_H)          # 2D pixel-space projection
-    glMatrixMode(GL_MODELVIEW)
-    glLoadIdentity()
-
-
-def screen_to_world_in_panel(px, py, panel_index):
-    """Inverse of apply_camera: convert mouse pixel back to canvas coords."""
-    canvas_cx = panel_index * PANEL_W + PANEL_W / 2.0
-    canvas_cy = 0 + (WIN_H - HUD_H) * 0.55
-    # undo final translate
-    x = px - canvas_cx
-    y = py - canvas_cy
-    # undo zoom
+def screen_to_world(px, py, panel_index):
+    ccx = panel_index * PANEL_W + PANEL_W / 2.0
+    ccy = (WIN_H - HUD_H) * 0.55
+    x = px - ccx
+    y = py - ccy
     if cam_zoom == 0:
         return 0, 0
     x /= cam_zoom
     y /= cam_zoom
-    # undo rotation
     rad = math.radians(-cam_angle)
     cs, sn = math.cos(rad), math.sin(rad)
-    xr = x * cs - y * sn
-    yr = x * sn + y * cs
-    # undo pan
+    xr = x*cs - y*sn
+    yr = x*sn + y*cs
     xr -= cam_pan_x
     yr -= cam_pan_y
     return xr, yr
 
 
-def mouse(button, state, mx, my):
+# =====================================================================
+#  GLFW CALLBACKS
+# =====================================================================
+
+def mouse_button_callback(window, button, action, mods):
     global dragging, selected_pt
-    y = WIN_H - my                        # flip y so origin is bottom-left
-    if button == GLUT_LEFT_BUTTON:
-        if state == GLUT_DOWN:
-            panel_index = min(mx // PANEL_W, 2)
-            wx, wy = screen_to_world_in_panel(mx, y, panel_index)
-            # pick nearest control point
-            best_i, best_d = 0, 1e18
-            for i, (cx, cy) in enumerate(ctrl):
-                d = (cx - wx) ** 2 + (cy - wy) ** 2
-                if d < best_d:
-                    best_d, best_i = d, i
-            selected_pt = best_i
-            dragging = True
-        else:
-            dragging = False
-    glutPostRedisplay()
+    if button != glfw.MOUSE_BUTTON_LEFT:
+        return
+    if action == glfw.PRESS:
+        mx, my = glfw.get_cursor_pos(window)
+        # GLFW y is top-down; flip to bottom-up
+        y = WIN_H - my
+        panel_index = min(int(mx // PANEL_W), 2)
+        wx, wy = screen_to_world(mx, y, panel_index)
+        best_i, best_d = 0, 1e18
+        for i, (cx, cy) in enumerate(ctrl):
+            d = (cx-wx)**2 + (cy-wy)**2
+            if d < best_d:
+                best_d, best_i = d, i
+        selected_pt = best_i
+        dragging = True
+    elif action == glfw.RELEASE:
+        dragging = False
 
 
-def motion(mx, my):
+def cursor_pos_callback(window, mx, my):
     if not dragging:
         return
     y = WIN_H - my
-    panel_index = min(mx // PANEL_W, 2)
-    wx, wy = screen_to_world_in_panel(mx, y, panel_index)
+    panel_index = min(int(mx // PANEL_W), 2)
+    wx, wy = screen_to_world(mx, y, panel_index)
     ctrl[selected_pt][0] = wx
     ctrl[selected_pt][1] = wy
-    glutPostRedisplay()
 
 
-def keyboard(key, x, y):
+def key_callback(window, key, scancode, action, mods):
     global cam_pan_x, cam_pan_y, cam_zoom, cam_angle
     global fill_mode, clipping_on, SEGMENTS, selected_pt
+    if action not in (glfw.PRESS, glfw.REPEAT):
+        return
 
-    if key == b'\x1b':                     # ESC
-        sys.exit(0)
-    elif key == b'w':   cam_pan_y += 15
-    elif key == b's':   cam_pan_y -= 15
-    elif key == b'a':   cam_pan_x -= 15
-    elif key == b'd':   cam_pan_x += 15
-    elif key == b'+':   cam_zoom *= 1.15
-    elif key == b'-':   cam_zoom /= 1.15
-    elif key == b'q':   cam_angle += 5
-    elif key == b'e':   cam_angle -= 5
-    elif key == b'0':
+    if key == glfw.KEY_ESCAPE:
+        glfw.set_window_should_close(window, True)
+    elif key == glfw.KEY_W: cam_pan_y += 15
+    elif key == glfw.KEY_S: cam_pan_y -= 15
+    elif key == glfw.KEY_A: cam_pan_x -= 15
+    elif key == glfw.KEY_D: cam_pan_x += 15
+    elif key in (glfw.KEY_EQUAL, glfw.KEY_KP_ADD):     cam_zoom *= 1.15
+    elif key in (glfw.KEY_MINUS, glfw.KEY_KP_SUBTRACT): cam_zoom /= 1.15
+    elif key == glfw.KEY_Q: cam_angle += 5
+    elif key == glfw.KEY_E: cam_angle -= 5
+    elif key == glfw.KEY_0:
         cam_pan_x = cam_pan_y = 0.0
-        cam_zoom  = 1.0
+        cam_zoom = 1.0
         cam_angle = 0.0
-    elif key == b'f':
-        fill_mode = not fill_mode
-    elif key == b'c':
-        clipping_on = not clipping_on
-    elif key == b'r':
+    elif key == glfw.KEY_F: fill_mode = not fill_mode
+    elif key == glfw.KEY_C: clipping_on = not clipping_on
+    elif key == glfw.KEY_R:
         for p in ctrl:
             p[0] = random.uniform(-320, 320)
             p[1] = random.uniform(-200, 200)
-    elif key in (b'1', b'2', b'3', b'4'):
-        selected_pt = int(key) - 1
-    elif key == b'[':
+    elif key in (glfw.KEY_1, glfw.KEY_2, glfw.KEY_3, glfw.KEY_4):
+        selected_pt = key - glfw.KEY_1
+    elif key == glfw.KEY_LEFT_BRACKET:
         SEGMENTS = max(8, SEGMENTS // 2)
-    elif key == b']':
+    elif key == glfw.KEY_RIGHT_BRACKET:
         SEGMENTS = min(512, SEGMENTS * 2)
-    glutPostRedisplay()
-
-
-def timer(_):
-    glutPostRedisplay()
-    glutTimerFunc(16, timer, 0)            # ~60 fps
 
 
 # =====================================================================
-#  ENTRY POINT
+#  MAIN
 # =====================================================================
 
 def main():
-    glutInit(sys.argv)
-    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB)
-    glutInitWindowSize(WIN_W, WIN_H)
-    glutCreateWindow(b"Bezier Algorithm Comparison - Font Rasterisation Visualiser")
-    reshape(WIN_W, WIN_H)
+    if not glfw.init():
+        raise SystemExit("Failed to initialize GLFW")
 
-    glutDisplayFunc(display)
-    glutReshapeFunc(reshape)
-    glutMouseFunc(mouse)
-    glutMotionFunc(motion)
-    glutKeyboardFunc(keyboard)
-    glutTimerFunc(16, timer, 0)
+    # Request an OpenGL 2.1 context (fixed-function pipeline)
+    glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 2)
+    glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 1)
+    glfw.window_hint(glfw.SAMPLES, 4)         # antialiasing
 
-    glutMainLoop()
+    window = glfw.create_window(
+        WIN_W, WIN_H,
+        "Bezier Algorithm Comparison - Font Rasterisation Visualiser",
+        None, None)
+    if not window:
+        glfw.terminate()
+        raise SystemExit("Failed to create GLFW window")
+
+    glfw.make_context_current(window)
+    glfw.swap_interval(1)                     # vsync
+
+    # Register input callbacks
+    glfw.set_mouse_button_callback(window, mouse_button_callback)
+    glfw.set_cursor_pos_callback(window, cursor_pos_callback)
+    glfw.set_key_callback(window, key_callback)
+
+    # Initial projection setup (also reset every frame inside loop)
+    glViewport(0, 0, WIN_W, WIN_H)
+
+    while not glfw.window_should_close(window):
+        # --- Per-frame: reset viewport and projection ---
+        fb_w, fb_h = glfw.get_framebuffer_size(window)
+        glViewport(0, 0, fb_w, fb_h)
+
+        glMatrixMode(GL_PROJECTION)
+        glLoadIdentity()
+        glOrtho(0.0, float(WIN_W), 0.0, float(WIN_H), -1.0, 1.0)
+
+        glMatrixMode(GL_MODELVIEW)
+        glLoadIdentity()
+
+        # --- Clear ---
+        glClearColor(0.05, 0.05, 0.07, 1.0)
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+
+        # --- Draw the three panels ---
+        draw_panel(0, "decasteljau", bezier_decasteljau, (0.35, 0.75, 1.0))
+        draw_panel(1, "bernstein",   bezier_bernstein,   (0.55, 0.95, 0.45))
+        draw_panel(2, "forward",     bezier_forward_diff,(1.0, 0.65, 0.35))
+
+        # --- HUD bar strip with per-algorithm timing ---
+        draw_rect(0, WIN_H - HUD_H, WIN_W, HUD_H, (0.08, 0.09, 0.11))
+
+        names = ["decasteljau", "bernstein", "forward"]
+        colors = [(0.35, 0.75, 1.0), (0.55, 0.95, 0.45), (1.0, 0.65, 0.35)]
+        max_us = max(max(metrics_smooth.values()), 1.0)
+        for i, (n, c) in enumerate(zip(names, colors)):
+            bar_x = 20 + i * 390
+            bar_w = int(360 * (metrics_smooth[n] / max_us))
+            bar_y = WIN_H - 40
+            draw_rect(bar_x, bar_y, 360, 16, (0.15, 0.16, 0.19))
+            draw_rect(bar_x, bar_y, bar_w, 16, c)
+            draw_rect(bar_x - 6, bar_y, 4, 16, c)
+
+        # --- Update the window title with live metrics ---
+        glfw.set_window_title(
+            window,
+            f"Bezier Comparison | "
+            f"deCasteljau={metrics_smooth['decasteljau']:.0f}us  "
+            f"Bernstein={metrics_smooth['bernstein']:.0f}us  "
+            f"FwdDiff={metrics_smooth['forward']:.0f}us | "
+            f"segments={SEGMENTS}  fill={'ON' if fill_mode else 'OFF'}  "
+            f"clip={'ON' if clipping_on else 'OFF'}  "
+            f"zoom={cam_zoom:.2f}x  rot={cam_angle:.0f}deg")
+
+        # --- Present ---
+        glfw.swap_buffers(window)
+        glfw.poll_events()
+
+    glfw.terminate()
 
 
 if __name__ == "__main__":
